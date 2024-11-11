@@ -1,19 +1,45 @@
 import { cloudflareDevProxyVitePlugin as remixCloudflareDevProxy, vitePlugin as remixVitePlugin } from '@remix-run/dev';
 import UnoCSS from 'unocss/vite';
-import { defineConfig, type ViteDevServer } from 'vite';
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
+import { defineConfig, type ViteDevServer, type Plugin } from 'vite';
 import { optimizeCssModules } from 'vite-plugin-optimize-css-modules';
 import tsconfigPaths from 'vite-tsconfig-paths';
+import nodePolyfills from 'rollup-plugin-node-polyfills';
+
+// Custom plugin to handle module definition
+function modulePolyfillPlugin(): Plugin {
+  const moduleCode = `
+    var module = {
+      exports: {}
+    };
+    var exports = module.exports;
+  `;
+
+  return {
+    name: 'module-polyfill',
+    transform(code, id) {
+      if (id.includes('node_modules/path-browserify')) {
+        return {
+          code: moduleCode + code,
+          map: null,
+        };
+      }
+    },
+  };
+}
 
 export default defineConfig((config) => {
   return {
     build: {
       target: 'esnext',
+      rollupOptions: {
+        plugins: [nodePolyfills()],
+      },
+      commonjsOptions: {
+        transformMixedEsModules: true,
+      },
     },
     plugins: [
-      nodePolyfills({
-        include: ['path', 'buffer'],
-      }),
+      modulePolyfillPlugin(),
       config.mode !== 'test' && remixCloudflareDevProxy(),
       remixVitePlugin({
         future: {
@@ -27,12 +53,58 @@ export default defineConfig((config) => {
       chrome129IssuePlugin(),
       config.mode === 'production' && optimizeCssModules({ apply: 'build' }),
     ],
-    envPrefix:["VITE_","OPENAI_LIKE_API_","OLLAMA_API_BASE_URL"],
+    envPrefix: ['VITE_', 'OPENAI_LIKE_API_', 'OLLAMA_API_BASE_URL'],
     css: {
       preprocessorOptions: {
         scss: {
           api: 'modern-compiler',
         },
+      },
+    },
+    define: {
+      'process.env': {},
+      global: 'globalThis',
+    },
+    resolve: {
+      alias: {
+        path: 'path-browserify',
+        buffer: 'rollup-plugin-node-polyfills/polyfills/buffer-es6',
+        util: 'rollup-plugin-node-polyfills/polyfills/util',
+        sys: 'util',
+        events: 'rollup-plugin-node-polyfills/polyfills/events',
+        stream: 'rollup-plugin-node-polyfills/polyfills/stream',
+        process: 'rollup-plugin-node-polyfills/polyfills/process-es6',
+      },
+    },
+    optimizeDeps: {
+      include: [
+        '@codemirror/search',
+        '@codemirror/state',
+        '@codemirror/view',
+        'react-resizable-panels',
+        '@radix-ui/react-dialog',
+        'date-fns',
+        '@webcontainer/api',
+        'istextorbinary',
+        'buffer',
+        'path-browserify',
+      ],
+      exclude: ['@remix-run/dev', 'unocss', 'vite-plugin-optimize-css-modules', 'vite-tsconfig-paths'],
+      esbuildOptions: {
+        define: {
+          global: 'globalThis',
+        },
+      },
+    },
+    server: {
+      fs: {
+        strict: false,
+      },
+      watch: {
+        usePolling: true,
+      },
+      hmr: {
+        timeout: 10000,
       },
     },
   };

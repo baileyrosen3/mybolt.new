@@ -1,8 +1,8 @@
 import type { PathWatcherEvent, WebContainer } from '@webcontainer/api';
 import { getEncoding } from 'istextorbinary';
 import { map, type MapStore } from 'nanostores';
-import { Buffer } from 'node:buffer';
-import * as nodePath from 'node:path';
+import { Buffer } from 'buffer';
+import path from 'path-browserify';
 import { bufferWatchEvents } from '~/utils/buffer';
 import { WORK_DIR } from '~/utils/constants';
 import { computeFileModifications } from '~/utils/diff';
@@ -84,33 +84,47 @@ export class FilesStore {
     const webcontainer = await this.#webcontainer;
 
     try {
-      const relativePath = nodePath.relative(webcontainer.workdir, filePath);
+      const relativePath = path.relative(webcontainer.workdir, filePath);
 
       if (!relativePath) {
         throw new Error(`EINVAL: invalid file path, write '${relativePath}'`);
       }
 
-      const oldContent = this.getFile(filePath)?.content;
+      const existingFile = this.getFile(filePath);
 
-      if (!oldContent) {
-        unreachable('Expected content to be defined');
+      // Create parent directories if they don't exist
+      const dirPath = path.dirname(relativePath);
+      if (dirPath !== '.') {
+        await webcontainer.fs.mkdir(dirPath, { recursive: true });
       }
 
+      // Write the file content
       await webcontainer.fs.writeFile(relativePath, content);
 
-      if (!this.#modifiedFiles.has(filePath)) {
-        this.#modifiedFiles.set(filePath, oldContent);
+      // If this is an existing file and we haven't tracked its modifications yet
+      if (existingFile && !this.#modifiedFiles.has(filePath)) {
+        this.#modifiedFiles.set(filePath, existingFile.content);
       }
 
-      // we immediately update the file and don't rely on the `change` event coming from the watcher
+      // Update the files store
       this.files.setKey(filePath, { type: 'file', content, isBinary: false });
+
+      // Increment size counter for new files
+      if (!existingFile) {
+        this.#size++;
+      }
 
       logger.info('File updated');
     } catch (error) {
       logger.error('Failed to update file content\n\n', error);
-
       throw error;
     }
+  }
+
+  clearFiles() {
+    this.#size = 0;
+    this.#modifiedFiles.clear();
+    this.files.set({});
   }
 
   async #init() {
@@ -125,9 +139,9 @@ export class FilesStore {
   #processEventBuffer(events: Array<[events: PathWatcherEvent[]]>) {
     const watchEvents = events.flat(2);
 
-    for (const { type, path, buffer } of watchEvents) {
+    for (const { type, path: filePath, buffer } of watchEvents) {
       // remove any trailing slashes
-      const sanitizedPath = path.replace(/\/+$/g, '');
+      const sanitizedPath = filePath.replace(/\/+$/g, '');
 
       switch (type) {
         case 'add_dir': {
@@ -205,12 +219,6 @@ function isBinaryFile(buffer: Uint8Array | undefined) {
   return getEncoding(convertToBuffer(buffer), { chunkLength: 100 }) === 'binary';
 }
 
-/**
- * Converts a `Uint8Array` into a Node.js `Buffer` by copying the prototype.
- * The goal is to  avoid expensive copies. It does create a new typed array
- * but that's generally cheap as long as it uses the same underlying
- * array buffer.
- */
 function convertToBuffer(view: Uint8Array): Buffer {
   const buffer = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 

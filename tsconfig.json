@@ -20,7 +20,8 @@
     },
 
     // vite takes care of building everything, not tsc
-    "noEmit": true
+    "noEmit": true,
+    "typeRoots": ["./node_modules/@types", "./app/types"]
   },
   "include": [
     "**/*.ts",
@@ -28,6 +29,7 @@
     "**/.server/**/*.ts",
     "**/.server/**/*.tsx",
     "**/.client/**/*.ts",
-    "**/.client/**/*.tsx"
+    "**/.client/**/*.tsx",
+    "app/types/**/*.d.ts"
   ]
 }

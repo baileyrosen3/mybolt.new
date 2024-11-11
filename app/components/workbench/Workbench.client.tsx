@@ -16,6 +16,8 @@ import { cubicEasingFn } from '~/utils/easings';
 import { renderLogger } from '~/utils/logger';
 import { EditorPanel } from './EditorPanel';
 import { Preview } from './Preview';
+import { Buffer } from 'buffer';
+import { SplitTerminal } from './SplitTerminal';
 
 interface WorkspaceProps {
   chatStarted?: boolean;
@@ -165,23 +167,26 @@ export const Workbench = memo(({ chatStarted, isStreaming }: WorkspaceProps) => 
                     <PanelHeaderButton
                       className="mr-1 text-sm"
                       onClick={() => {
-                        const repoName = prompt("Please enter a name for your new GitHub repository:", "bolt-generated-project");
+                        const repoName = prompt(
+                          'Please enter a name for your new GitHub repository:',
+                          'bolt-generated-project',
+                        );
                         if (!repoName) {
-                          alert("Repository name is required. Push to GitHub cancelled.");
+                          alert('Repository name is required. Push to GitHub cancelled.');
                           return;
                         }
-                        const githubUsername = prompt("Please enter your GitHub username:");
+                        const githubUsername = prompt('Please enter your GitHub username:');
                         if (!githubUsername) {
-                          alert("GitHub username is required. Push to GitHub cancelled.");
+                          alert('GitHub username is required. Push to GitHub cancelled.');
                           return;
                         }
-                        const githubToken = prompt("Please enter your GitHub personal access token:");
+                        const githubToken = prompt('Please enter your GitHub personal access token:');
                         if (!githubToken) {
-                          alert("GitHub token is required. Push to GitHub cancelled.");
+                          alert('GitHub token is required. Push to GitHub cancelled.');
                           return;
                         }
-                        
-                      workbenchStore.pushToGitHub(repoName, githubUsername, githubToken);  
+
+                        workbenchStore.pushToGitHub(repoName, githubUsername, githubToken);
                       }}
                     >
                       <div className="i-ph:github-logo" />
@@ -203,18 +208,23 @@ export const Workbench = memo(({ chatStarted, isStreaming }: WorkspaceProps) => 
                   initial={{ x: selectedView === 'code' ? 0 : '-100%' }}
                   animate={{ x: selectedView === 'code' ? 0 : '-100%' }}
                 >
-                  <EditorPanel
-                    editorDocument={currentDocument}
-                    isStreaming={isStreaming}
-                    selectedFile={selectedFile}
-                    files={files}
-                    unsavedFiles={unsavedFiles}
-                    onFileSelect={onFileSelect}
-                    onEditorScroll={onEditorScroll}
-                    onEditorChange={onEditorChange}
-                    onFileSave={onFileSave}
-                    onFileReset={onFileReset}
-                  />
+                  <div className="flex flex-col h-full">
+                    <EditorPanel
+                      editorDocument={currentDocument}
+                      isStreaming={isStreaming}
+                      selectedFile={selectedFile}
+                      files={files}
+                      unsavedFiles={unsavedFiles}
+                      onFileSelect={onFileSelect}
+                      onEditorScroll={onEditorScroll}
+                      onEditorChange={onEditorChange}
+                      onFileSave={onFileSave}
+                      onFileReset={onFileReset}
+                    />
+                    <div className="h-1/3 border-t border-bolt-elements-borderColor">
+                      <SplitTerminal />
+                    </div>
+                  </div>
                 </View>
                 <View
                   initial={{ x: selectedView === 'preview' ? 0 : '100%' }}

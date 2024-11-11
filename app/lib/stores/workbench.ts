@@ -1,3 +1,4 @@
+import { toast } from 'react-toastify';
 import { atom, map, type MapStore, type ReadableAtom, type WritableAtom } from 'nanostores';
 import type { EditorDocument, ScrollPosition } from '~/components/editor/codemirror/CodeMirrorEditor';
 import { ActionRunner } from '~/lib/runtime/action-runner';
@@ -10,8 +11,10 @@ import { FilesStore, type FileMap } from './files';
 import { PreviewsStore } from './previews';
 import { TerminalStore } from './terminal';
 import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
-import { Octokit } from "@octokit/rest";
+import fileSaver from 'file-saver';
+const { saveAs } = fileSaver;
+import { Octokit } from '@octokit/rest';
+import { Buffer } from 'buffer';
 
 export interface ArtifactState {
   id: string;
@@ -26,6 +29,28 @@ type Artifacts = MapStore<Record<string, ArtifactState>>;
 
 export type WorkbenchViewType = 'code' | 'preview';
 
+// Add type for repo response
+type GitHubRepo = {
+  data: {
+    owner: {
+      login: string;
+    };
+    name: string;
+    default_branch: string;
+    html_url: string;
+  };
+};
+
+// Add import status type
+export type ImportStatus = {
+  stage: 'importing' | 'installing' | 'starting' | 'complete' | 'error';
+  message: string;
+  progress?: {
+    current: number;
+    total: number;
+  };
+};
+
 export class WorkbenchStore {
   #previewsStore = new PreviewsStore(webcontainer);
   #filesStore = new FilesStore(webcontainer);
@@ -39,6 +64,12 @@ export class WorkbenchStore {
   unsavedFiles: WritableAtom<Set<string>> = import.meta.hot?.data.unsavedFiles ?? atom(new Set<string>());
   modifiedFiles = new Set<string>();
   artifactIdList: string[] = [];
+
+  // Add status atom
+  importStatus: WritableAtom<ImportStatus | null> = atom(null);
+
+  terminalOutput = atom<string>('');
+  aiTerminalOutput = atom<string>('');
 
   constructor() {
     if (import.meta.hot) {
@@ -336,78 +367,69 @@ export class WorkbenchStore {
   }
 
   async pushToGitHub(repoName: string, githubUsername: string, ghToken: string) {
-    
     try {
-      // Get the GitHub auth token from environment variables
       const githubToken = ghToken;
-      
       const owner = githubUsername;
-      
+
       if (!githubToken) {
         throw new Error('GitHub token is not set in environment variables');
       }
-  
-      // Initialize Octokit with the auth token
+
       const octokit = new Octokit({ auth: githubToken });
-  
-      // Check if the repository already exists before creating it
-      let repo
+
+      let repoData: GitHubRepo['data'];
       try {
-        repo = await octokit.repos.get({ owner: owner, repo: repoName });
+        const { data } = await octokit.repos.get({ owner, repo: repoName });
+        repoData = data;
       } catch (error) {
         if (error instanceof Error && 'status' in error && error.status === 404) {
-          // Repository doesn't exist, so create a new one
-          const { data: newRepo } = await octokit.repos.createForAuthenticatedUser({
+          const { data } = await octokit.repos.createForAuthenticatedUser({
             name: repoName,
             private: false,
             auto_init: true,
           });
-          repo = newRepo;
+          repoData = data;
         } else {
           console.log('cannot create repo!');
-          throw error; // Some other error occurred
+          throw error;
         }
       }
-  
-      // Get all files
+
       const files = this.files.get();
       if (!files || Object.keys(files).length === 0) {
         throw new Error('No files found to push');
       }
-  
-      // Create blobs for each file
+
       const blobs = await Promise.all(
         Object.entries(files).map(async ([filePath, dirent]) => {
           if (dirent?.type === 'file' && dirent.content) {
             const { data: blob } = await octokit.git.createBlob({
-              owner: repo.owner.login,
-              repo: repo.name,
+              owner: repoData.owner.login,
+              repo: repoData.name,
               content: Buffer.from(dirent.content).toString('base64'),
               encoding: 'base64',
             });
             return { path: filePath.replace(/^\/home\/project\//, ''), sha: blob.sha };
           }
-        })
+        }),
       );
-  
-      const validBlobs = blobs.filter(Boolean); // Filter out any undefined blobs
-  
+
+      const validBlobs = blobs.filter(Boolean);
+
       if (validBlobs.length === 0) {
         throw new Error('No valid files to push');
       }
-  
-      // Get the latest commit SHA (assuming main branch, update dynamically if needed)
+
       const { data: ref } = await octokit.git.getRef({
-        owner: repo.owner.login,
-        repo: repo.name,
-        ref: `heads/${repo.default_branch || 'main'}`, // Handle dynamic branch
+        owner: repoData.owner.login,
+        repo: repoData.name,
+        ref: `heads/${repoData.default_branch || 'main'}`,
       });
       const latestCommitSha = ref.object.sha;
-  
-      // Create a new tree
+
       const { data: newTree } = await octokit.git.createTree({
-        owner: repo.owner.login,
-        repo: repo.name,
+        owner: repoData.owner.login,
+        repo: repoData.name,
         base_tree: latestCommitSha,
         tree: validBlobs.map((blob) => ({
           path: blob!.path,
@@ -416,28 +438,139 @@ export class WorkbenchStore {
           sha: blob!.sha,
         })),
       });
-  
-      // Create a new commit
+
       const { data: newCommit } = await octokit.git.createCommit({
-        owner: repo.owner.login,
-        repo: repo.name,
+        owner: repoData.owner.login,
+        repo: repoData.name,
         message: 'Initial commit from your app',
         tree: newTree.sha,
         parents: [latestCommitSha],
       });
-  
-      // Update the reference
+
       await octokit.git.updateRef({
-        owner: repo.owner.login,
-        repo: repo.name,
-        ref: `heads/${repo.default_branch || 'main'}`, // Handle dynamic branch
+        owner: repoData.owner.login,
+        repo: repoData.name,
+        ref: `heads/${repoData.default_branch || 'main'}`,
         sha: newCommit.sha,
       });
-  
-      alert(`Repository created and code pushed: ${repo.html_url}`);
+
+      alert(`Repository created and code pushed: ${repoData.html_url}`);
     } catch (error) {
       console.error('Error pushing to GitHub:', error instanceof Error ? error.message : String(error));
     }
+  }
+
+  async importLocalRepo(directoryHandle: FileSystemDirectoryHandle) {
+    try {
+      await this.#filesStore.clearFiles();
+
+      // First count total files (excluding node_modules)
+      let totalFiles = 0;
+      const countFiles = async (dirHandle: FileSystemDirectoryHandle) => {
+        for await (const entry of dirHandle.values()) {
+          // Skip node_modules directory and hidden files
+          if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+
+          if (entry.kind === 'file') {
+            totalFiles++;
+          } else if (entry.kind === 'directory') {
+            await countFiles(entry as FileSystemDirectoryHandle);
+          }
+        }
+      };
+      await countFiles(directoryHandle);
+
+      this.importStatus.set({
+        stage: 'importing',
+        message: 'Importing project files...',
+        progress: { current: 0, total: totalFiles },
+      });
+
+      let currentFiles = 0;
+      const readDirectory = async (dirHandle: FileSystemDirectoryHandle, path = '') => {
+        for await (const entry of dirHandle.values()) {
+          // Skip node_modules directory and hidden files
+          if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+
+          const entryPath = path ? `${path}/${entry.name}` : entry.name;
+
+          if (entry.kind === 'file') {
+            try {
+              const fileHandle = entry as FileSystemFileHandle;
+              const file = await fileHandle.getFile();
+
+              // Skip files larger than 10MB
+              if (file.size > 10 * 1024 * 1024) {
+                console.warn(`Skipping large file: ${entryPath} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+                currentFiles++;
+                this.importStatus.set({
+                  stage: 'importing',
+                  message: 'Importing project files...',
+                  progress: { current: currentFiles, total: totalFiles },
+                });
+                continue;
+              }
+
+              // Read file in chunks if it's larger than 1MB
+              let content = '';
+              if (file.size > 1024 * 1024) {
+                const chunks = [];
+                const reader = file.stream().getReader();
+
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  chunks.push(new TextDecoder().decode(value));
+                }
+                content = chunks.join('');
+              } else {
+                content = await file.text();
+              }
+
+              await this.#filesStore.saveFile(`/home/project/${entryPath}`, content);
+              currentFiles++;
+
+              this.importStatus.set({
+                stage: 'importing',
+                message: 'Importing project files...',
+                progress: { current: currentFiles, total: totalFiles },
+              });
+            } catch (error) {
+              console.error(`Error importing file ${entryPath}:`, error);
+              // Continue with next file instead of failing the whole import
+              currentFiles++;
+              this.importStatus.set({
+                stage: 'importing',
+                message: `Skipped file ${entryPath} due to error`,
+                progress: { current: currentFiles, total: totalFiles },
+              });
+            }
+          } else if (entry.kind === 'directory') {
+            await readDirectory(entry as FileSystemDirectoryHandle, entryPath);
+          }
+        }
+      };
+
+      await readDirectory(directoryHandle);
+
+      // Show the workbench after import
+      this.setShowWorkbench(true);
+      this.currentView.set('code');
+
+      this.importStatus.set({ stage: 'complete', message: 'Project imported successfully!' });
+      toast.success('Project imported! Check the chat for next steps.');
+
+      return true;
+    } catch (error) {
+      console.error('Error importing repository:', error);
+      this.importStatus.set({ stage: 'error', message: 'Failed to import repository' });
+      throw error;
+    }
+  }
+
+  async runAICommand(command: string) {
+    this.aiTerminalOutput.set(this.aiTerminalOutput.get() + '\n> ' + command);
+    // Implement command execution logic here
   }
 }
 

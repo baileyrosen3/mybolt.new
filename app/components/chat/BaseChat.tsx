@@ -13,6 +13,9 @@ import { SendButton } from './SendButton.client';
 import { useState } from 'react';
 import { APIKeyManager } from './APIKeyManager';
 import Cookies from 'js-cookie';
+import { toast } from 'react-toastify';
+import { workbenchStore } from '~/lib/stores/workbench';
+import { useStore } from '@nanostores/react';
 
 import styles from './BaseChat.module.scss';
 
@@ -24,16 +27,16 @@ const EXAMPLE_PROMPTS = [
   { text: 'How do I center a div?' },
 ];
 
-const providerList = [...new Set(MODEL_LIST.map((model) => model.provider))]
+const providerList = [...new Set(MODEL_LIST.map((model) => model.provider))];
 
 const ModelSelector = ({ model, setModel, provider, setProvider, modelList, providerList }) => {
   return (
     <div className="mb-2 flex gap-2">
-      <select 
+      <select
         value={provider}
         onChange={(e) => {
           setProvider(e.target.value);
-          const firstModel = [...modelList].find(m => m.provider == e.target.value);
+          const firstModel = [...modelList].find((m) => m.provider == e.target.value);
           setModel(firstModel ? firstModel.name : '');
         }}
         className="flex-1 p-2 rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-prompt-background text-bolt-elements-textPrimary focus:outline-none focus:ring-2 focus:ring-bolt-elements-focus transition-all"
@@ -55,11 +58,13 @@ const ModelSelector = ({ model, setModel, provider, setProvider, modelList, prov
         onChange={(e) => setModel(e.target.value)}
         className="flex-1 p-2 rounded-lg border border-bolt-elements-borderColor bg-bolt-elements-prompt-background text-bolt-elements-textPrimary focus:outline-none focus:ring-2 focus:ring-bolt-elements-focus transition-all"
       >
-        {[...modelList].filter(e => e.provider == provider && e.name).map((modelOption) => (
-          <option key={modelOption.name} value={modelOption.name}>
-            {modelOption.label}
-          </option>
-        ))}
+        {[...modelList]
+          .filter((e) => e.provider == provider && e.name)
+          .map((modelOption) => (
+            <option key={modelOption.name} value={modelOption.name}>
+              {modelOption.label}
+            </option>
+          ))}
       </select>
     </div>
   );
@@ -114,6 +119,7 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
   ) => {
     const TEXTAREA_MAX_HEIGHT = chatStarted ? 400 : 200;
     const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+    const importStatus = useStore(workbenchStore.importStatus);
 
     useEffect(() => {
       // Load API keys from cookies on component mount
@@ -141,10 +147,74 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
           expires: 30, // 30 days
           secure: true, // Only send over HTTPS
           sameSite: 'strict', // Protect against CSRF
-          path: '/' // Accessible across the site
+          path: '/', // Accessible across the site
         });
       } catch (error) {
         console.error('Error saving API keys to cookies:', error);
+      }
+    };
+
+    const handleRepoImport = async () => {
+      try {
+        const directoryHandle = await window.showDirectoryPicker({
+          mode: 'read',
+        });
+
+        // Start import with initial status
+        workbenchStore.importStatus.set({
+          stage: 'importing',
+          message: 'Importing project...',
+        });
+
+        const result = await workbenchStore.importLocalRepo(directoryHandle);
+
+        // Set status to running commands
+        workbenchStore.importStatus.set({
+          stage: 'running',
+          message: 'Running setup commands...',
+        });
+
+        // Wait for terminal response or timeout after 30 seconds
+        let timeout = setTimeout(() => {
+          workbenchStore.importStatus.set({
+            stage: 'complete',
+            message: 'Import complete',
+          });
+        }, 30000);
+
+        // Listen for terminal output
+        const unsubscribe = workbenchStore.terminalOutput.subscribe((output) => {
+          if (output && (output.includes('ERR!') || output.includes('error'))) {
+            clearTimeout(timeout);
+            workbenchStore.importStatus.set({
+              stage: 'error',
+              message: 'Command failed: ' + output,
+            });
+            unsubscribe();
+          } else if (output && output.includes('ready')) {
+            clearTimeout(timeout);
+            workbenchStore.importStatus.set({
+              stage: 'complete',
+              message: 'Setup complete!',
+            });
+            unsubscribe();
+          }
+        });
+
+        // Send initial message after successful import
+        if (sendMessage) {
+          const welcomeMessage =
+            "With existing projects run 'npm install' to install dependencies and 'npm run dev' to start the development server.";
+
+          sendMessage(new Event('click') as React.UIEvent, welcomeMessage);
+        }
+      } catch (error) {
+        console.error('Error importing repository:', error);
+        workbenchStore.importStatus.set({
+          stage: 'error',
+          message: 'Failed to import repository',
+        });
+        toast.error('Failed to import repository');
       }
     };
 
@@ -168,8 +238,52 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                 <p className="text-xl mb-8 text-bolt-elements-textSecondary animate-fade-in animation-delay-200">
                   Bring ideas to life in seconds or get help on existing projects.
                 </p>
+
+                <button
+                  onClick={handleRepoImport}
+                  disabled={importStatus?.stage && importStatus.stage !== 'complete'}
+                  className={classNames(
+                    'px-6 py-3 mb-8 bg-bolt-elements-item-backgroundAccent text-bolt-elements-textPrimary rounded-lg transition-all',
+                    {
+                      'hover:bg-opacity-80': !importStatus?.stage || importStatus.stage === 'complete',
+                      'opacity-50 cursor-not-allowed': importStatus?.stage && importStatus.stage !== 'complete',
+                    },
+                  )}
+                >
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      {importStatus?.stage && importStatus.stage !== 'complete' ? (
+                        <>
+                          <div className="i-svg-spinners:90-ring-with-bg animate-spin" />
+                          {importStatus.message}
+                        </>
+                      ) : (
+                        <>
+                          <div className="i-ph:folder-open" />
+                          Import Existing Project
+                        </>
+                      )}
+                    </div>
+                    {importStatus?.progress && (
+                      <div className="text-sm flex flex-col items-center w-full">
+                        <div className="w-full h-1 bg-bolt-elements-background-depth-2 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-bolt-elements-item-contentAccent transition-all duration-300"
+                            style={{
+                              width: `${(importStatus.progress.current / importStatus.progress.total) * 100}%`,
+                            }}
+                          />
+                        </div>
+                        <div className="text-xs mt-1">
+                          {importStatus.progress.current} / {importStatus.progress.total} files
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </button>
               </div>
             )}
+            {importStatus?.stage === 'error' && <div className="text-red-500 text-sm mt-2">{importStatus.message}</div>}
             <div
               className={classNames('pt-6 px-6', {
                 'h-full flex flex-col': chatStarted,
@@ -278,7 +392,9 @@ export const BaseChat = React.forwardRef<HTMLDivElement, BaseChatProps>(
                     </div>
                     {input.length > 3 ? (
                       <div className="text-xs text-bolt-elements-textTertiary">
-                        Use <kbd className="kdb px-1.5 py-0.5 rounded bg-bolt-elements-background-depth-2">Shift</kbd> + <kbd className="kdb px-1.5 py-0.5 rounded bg-bolt-elements-background-depth-2">Return</kbd> for a new line
+                        Use <kbd className="kdb px-1.5 py-0.5 rounded bg-bolt-elements-background-depth-2">Shift</kbd> +{' '}
+                        <kbd className="kdb px-1.5 py-0.5 rounded bg-bolt-elements-background-depth-2">Return</kbd> for
+                        a new line
                       </div>
                     ) : null}
                   </div>
