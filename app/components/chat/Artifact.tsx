@@ -7,6 +7,8 @@ import type { ActionState } from '~/lib/runtime/action-runner';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { classNames } from '~/utils/classNames';
 import { cubicEasingFn } from '~/utils/easings';
+import { createScopedLogger } from '~/utils/logger';
+const logger = createScopedLogger('Artifact');
 
 const highlighterOptions = {
   langs: ['shell'],
@@ -43,6 +45,12 @@ export const Artifact = memo(({ messageId }: ArtifactProps) => {
   };
 
   useEffect(() => {
+    logger.debug('Artifact actions updated', {
+      messageId,
+      actionCount: actions.length,
+      lastAction: actions[actions.length - 1],
+    });
+
     if (actions.length && !showActions && !userToggledActions.current) {
       setShowActions(true);
     }

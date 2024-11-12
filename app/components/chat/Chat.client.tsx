@@ -108,10 +108,19 @@ export const ChatImpl = memo(({ initialMessages, storeMessageHistory }: ChatProp
   }, []);
 
   useEffect(() => {
+    logger.debug('Parsing messages', {
+      messageCount: messages.length,
+      isLoading,
+      lastMessage: messages[messages.length - 1]?.content,
+    });
+
     parseMessages(messages, isLoading);
 
     if (messages.length > initialMessages.length) {
-      storeMessageHistory(messages).catch((error) => toast.error(error.message));
+      storeMessageHistory(messages).catch((error) => {
+        logger.error('Failed to store message history', error);
+        toast.error(error.message);
+      });
     }
   }, [messages, isLoading, parseMessages]);
 

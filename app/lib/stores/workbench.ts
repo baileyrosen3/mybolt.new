@@ -15,6 +15,8 @@ import fileSaver from 'file-saver';
 const { saveAs } = fileSaver;
 import { Octokit } from '@octokit/rest';
 import { Buffer } from 'buffer';
+import { createScopedLogger } from '~/utils/logger';
+const logger = createScopedLogger('WorkbenchStore');
 
 export interface ArtifactState {
   id: string;
@@ -279,10 +281,12 @@ export class WorkbenchStore {
 
   async addAction(data: ActionCallbackData) {
     const { messageId } = data;
+    logger.debug('Adding action', { messageId, action: data.action });
 
     const artifact = this.#getArtifact(messageId);
 
     if (!artifact) {
+      logger.error('Artifact not found for action', { messageId });
       unreachable('Artifact not found');
     }
 
@@ -291,14 +295,21 @@ export class WorkbenchStore {
 
   async runAction(data: ActionCallbackData) {
     const { messageId } = data;
+    logger.debug('Running action', { messageId, action: data.action });
 
     const artifact = this.#getArtifact(messageId);
 
     if (!artifact) {
+      logger.error('Artifact not found for action', { messageId });
       unreachable('Artifact not found');
     }
 
-    artifact.runner.runAction(data);
+    try {
+      await artifact.runner.runAction(data);
+      logger.debug('Action completed', { messageId, action: data.action });
+    } catch (error) {
+      logger.error('Action failed', { messageId, action: data.action, error });
+    }
   }
 
   #getArtifact(id: string) {

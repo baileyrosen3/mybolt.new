@@ -44,6 +44,7 @@ export class ActionRunner {
   }
 
   addAction(data: ActionCallbackData) {
+    logger.debug(`Adding action: ${data.action.type}`, data);
     const { actionId } = data;
 
     const actions = this.actions.get();
@@ -73,6 +74,7 @@ export class ActionRunner {
   }
 
   async runAction(data: ActionCallbackData) {
+    logger.debug(`Running action: ${data.action.type}`, data);
     const { actionId } = data;
     const action = this.actions.get()[actionId];
 
@@ -128,25 +130,61 @@ export class ActionRunner {
 
     const webcontainer = await this.#webcontainer;
 
-    const process = await webcontainer.spawn('jsh', ['-c', action.content], {
-      env: { npm_config_yes: true },
-    });
+    try {
+      logger.debug(`Starting shell command: ${action.content}`);
 
-    action.abortSignal.addEventListener('abort', () => {
-      process.kill();
-    });
+      const process = await webcontainer.spawn('jsh', ['-c', action.content], {
+        env: { npm_config_yes: true },
+      });
 
-    process.output.pipeTo(
-      new WritableStream({
-        write(data) {
-          console.log(data);
-        },
-      }),
-    );
+      // Add abort handler
+      action.abortSignal.addEventListener('abort', () => {
+        logger.debug('Aborting shell command');
+        process.kill();
+      });
 
-    const exitCode = await process.exit;
+      // Create a promise that resolves when the process exits
+      const exitPromise = new Promise<number>((resolve, reject) => {
+        process.exit.then(resolve).catch(reject);
+      });
 
-    logger.debug(`Process terminated with code ${exitCode}`);
+      // Pipe output with logging
+      process.output
+        .pipeTo(
+          new WritableStream({
+            write(data) {
+              logger.debug(`Process output: ${data}`);
+              console.log(data);
+            },
+          }),
+        )
+        .catch((error: any) => {
+          logger.error('Error piping process output:', error);
+        });
+
+      // Wait for process to exit with timeout for long-running processes
+      const exitCode = await Promise.race([
+        exitPromise,
+        // For commands like "next dev" that don't exit, consider them complete after output appears
+        new Promise<number>((resolve) => {
+          setTimeout(() => {
+            if (action.content.includes('next dev') || action.content.includes('npm')) {
+              logger.debug('Long-running process detected, marking as complete');
+              resolve(0);
+            }
+          }, 5000); // Wait 5 seconds for initial output
+        }),
+      ]);
+
+      logger.debug(`Process terminated with code ${exitCode}`);
+
+      if (exitCode !== 0 && !action.content.includes('next dev')) {
+        throw new Error(`Process failed with exit code ${exitCode}`);
+      }
+    } catch (error) {
+      logger.error('Shell action failed:', error);
+      throw error;
+    }
   }
 
   async #runFileAction(action: ActionState) {
