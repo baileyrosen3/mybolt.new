@@ -110,43 +110,72 @@ export class ActionRunner {
           await this.#runFileAction(action);
           break;
         }
+        case 'import': {
+          await this.#importRepository(action);
+          break;
+        }
       }
 
-      this.#updateAction(actionId, { status: action.abortSignal.aborted ? 'aborted' : 'complete' });
+      this.#updateAction(actionId, {
+        status: action.abortSignal.aborted ? 'aborted' : 'complete',
+      });
     } catch (error) {
-      this.#updateAction(actionId, { status: 'failed', error: 'Action failed' });
-
-      // re-throw the error to be caught in the promise chain
+      this.#updateAction(actionId, {
+        status: 'failed',
+        error: error instanceof Error ? error.message : 'Action failed',
+      });
       throw error;
     }
   }
 
   async #runShellAction(action: ActionState) {
-    if (action.type !== 'shell') {
-      unreachable('Expected shell action');
-    }
-
     const webcontainer = await this.#webcontainer;
+
+    logger.debug(`Starting shell command: ${action.content}`);
 
     const process = await webcontainer.spawn('jsh', ['-c', action.content], {
       env: { npm_config_yes: true },
     });
 
     action.abortSignal.addEventListener('abort', () => {
+      logger.debug('Aborting shell command');
       process.kill();
     });
 
-    process.output.pipeTo(
-      new WritableStream({
-        write(data) {
-          console.log(data);
-        },
-      }),
-    );
+    const exitPromise = new Promise<number>((resolve, reject) => {
+      process.exit.then(resolve).catch(reject);
+    });
 
-    const exitCode = await process.exit;
+    process.output
+      .pipeTo(
+        new WritableStream({
+          write(data) {
+            logger.debug(`Process output: ${data}`);
+            console.log(data);
+          },
+        }),
+      )
+      .catch((error: any) => {
+        logger.error('Error piping process output:', error);
+      });
+
+    const exitCode = await Promise.race([
+      exitPromise,
+      new Promise<number>((resolve) => {
+        setTimeout(() => {
+          if (action.content.includes('next dev') || action.content.includes('npm')) {
+            logger.debug('Long-running process detected, marking as complete');
+            resolve(0);
+          }
+        }, 5000);
+      }),
+    ]);
 
     logger.debug(`Process terminated with code ${exitCode}`);
+
+    if (exitCode !== 0 && !action.content.includes('next dev')) {
+      throw new Error(`Process failed with exit code ${exitCode}`);
+    }
   }
 
   async #runFileAction(action: ActionState) {
@@ -175,6 +204,65 @@ export class ActionRunner {
       logger.debug(`File written ${action.filePath}`);
     } catch (error) {
       logger.error('Failed to write file\n\n', error);
+    }
+  }
+
+  async #importRepository(action: ActionState) {
+    if (action.type !== 'import') {
+      unreachable('Expected import action');
+    }
+
+    const webcontainer = await this.#webcontainer;
+    logger.debug('Starting repository import');
+
+    try {
+      // Create base directory if needed
+      const folder = action.targetPath || '.';
+      if (folder !== '.') {
+        await webcontainer.fs.mkdir(folder, { recursive: true });
+      }
+
+      // Write files from the import action
+      for (const file of action.files) {
+        const filePath = `${folder}/${file.path}`;
+        const fileDir = nodePath.dirname(filePath);
+
+        // Create directories if needed
+        if (fileDir !== '.') {
+          await webcontainer.fs.mkdir(fileDir, { recursive: true });
+        }
+
+        // Write file content
+        await webcontainer.fs.writeFile(filePath, file.content);
+        logger.debug(`Imported file: ${filePath}`);
+      }
+
+      // Run post-import commands if specified
+      if (action.postImportCommands?.length) {
+        for (const command of action.postImportCommands) {
+          const process = await webcontainer.spawn('jsh', ['-c', command]);
+
+          // Handle command output
+          process.output.pipeTo(
+            new WritableStream({
+              write(data) {
+                logger.debug(`Command output: ${data}`);
+                console.log(data);
+              },
+            }),
+          );
+
+          const exitCode = await process.exit;
+          if (exitCode !== 0) {
+            throw new Error(`Post-import command failed: ${command}`);
+          }
+        }
+      }
+
+      logger.debug('Repository import completed successfully');
+    } catch (error) {
+      logger.error('Repository import failed:', error);
+      throw error;
     }
   }
 
